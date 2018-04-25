@@ -33,8 +33,8 @@ Scenario: Google Sheet fails validation test on columns
   And that folder contains a Google Sheet called "GoogleSheetFailsValidationTestOnColumns"  
   And "GoogleSheetFailsValidationTestOnColumns" contains the following data:
 
-     foo | bar | bat |
-     x | x | x  |
+     | foo | bar | bat |
+     | x | x | x  |
 
   When "jim@example.net" runs a test process on the "MyInventories" folder
   Then he is informed that "InventoryC" is missing columns: `Name`, `Quantity`, `Purpose`, `PurposeOther`, `KNumberExists`, `KNumber` and `AlternativeNumber`"
