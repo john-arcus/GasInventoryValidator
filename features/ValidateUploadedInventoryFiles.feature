@@ -37,7 +37,7 @@ Scenario: Google Sheet fails validation test on columns
      | x | x | x  |
 
   When "jim@example.net" runs a test process on the "MyInventories" folder
-  Then he is informed that "InventoryC" is missing columns: `Name`, `Quantity`, `Purpose`, `PurposeOther`, `KNumberExists`, `KNumber` and `AlternativeNumber`"
+  Then he is informed that "GoogleSheetFailsValidationTestOnColumns" is missing columns: `Name`, `Quantity`, `Purpose`, `PurposeOther`, `KNumberExists`, `KNumber` and `AlternativeNumber`"
   And "Fail" is reported as the summary.
 
 Scenario: Non-verbose mode passes validation test on columns with minimal details reported
