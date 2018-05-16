@@ -1,0 +1,13 @@
+{
+    "name": "arcus-software/gas-inventory-validator",
+    "description": "Google Apps Script to be embedded in Google Sheet. Given a folder on GGoogle Drive, recursively iterate through it and its subfolders to report if any Google Sheets are present which do not conform to the rules defining properly formed inventory files.",
+    "type": "library",
+    "license": "Apache-2.0",
+    "authors": [
+        {
+            "name": "John (Arcus)",
+            "email": "32770045+john-arcus@users.noreply.github.com"
+        }
+    ],
+    "require": {}
+}
