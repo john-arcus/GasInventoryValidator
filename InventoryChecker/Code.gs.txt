@@ -1,0 +1,284 @@
+/**
+Google Apps Script to be embedded into a Google Sheet that matches the structure of 
+
+ValidateFolder-v1.4.xlsx 
+
+*/
+
+var STATE = {OK:1,CONTINUE:2,FAIL:3};
+var SUMMARY_SHEET = "Summary";
+var DETAIL_SHEET = "Detail";
+var DATA_SHEET = "Data";
+var VIOLATIONS_SHEET = "Violations";
+var MAX_VIOLATIONS_PER_TAB = 5; // maximum number of violations to report for a given tab
+var TIMEOUT = 5*60*1000; // 5 minutes
+//var TIMEOUT = 5*1000; // 5 seconds
+
+function onOpen() {
+  var ui = SpreadsheetApp.getUi();
+  ui.createMenu("Inventory")
+  .addItem("Verify", "verifyInventory")
+  .addItem("Reset", "resetInventory")
+  .addToUi();
+}
+
+function resetInventory() {
+  var ss = SpreadsheetApp.getActive();
+  var sheet = ss.getSheetByName(DETAIL_SHEET);
+  if (sheet.getLastRow()>1) sheet.getRange(2,1,sheet.getLastRow()-1,sheet.getLastColumn()).clearContent();
+  var sheet = ss.getSheetByName(VIOLATIONS_SHEET);
+  if (sheet.getLastRow()>1) sheet.getRange(2,1,sheet.getLastRow()-1,sheet.getLastColumn()).clearContent();
+  var sheet = ss.getSheetByName(SUMMARY_SHEET);
+  sheet.getRange("B2").setValue("");
+}
+
+function verifyInventory() {
+  var d = new Date();
+  var s = d.getTime(), e=s;
+  
+  var states = getStates();
+  var settings = getSettings(states);
+  
+  if (settings.state!=STATE.CONTINUE) {
+    var folder = DriveApp.getFolderById(settings.folderId);
+    var items = getInventoryByFolder(folder);
+    writeInitialInventory(items);
+    clearViolations();
+  } else {
+    var items = getInventoryToCheck();
+  }
+  
+  var fail = false;
+  for (var i=0; i<items.length && ((e-s)<TIMEOUT); i++) {
+    var item = items[i];
+    var result = validateItem(item);
+    recordItemState(item.row,states[result.state]);
+    if (result.state!=STATE.OK) {
+      fail = true;
+      recordViolations(item,result.violations);
+    }
+    var d = new Date();
+    var e = d.getTime();
+  }
+
+  var state = (i<items.length?STATE.CONTINUE:(fail?STATE.FAIL:STATE.OK));
+  recordOverallState(states[state]);
+}
+
+function validateItem(item) {
+  if (item.type == MimeType.MICROSOFT_EXCEL || item.type == MimeType.MICROSOFT_EXCEL_LEGACY) return {state:STATE.FAIL,violations:["has not been converted to Google Sheets"]}
+  if (item.type != MimeType.GOOGLE_SHEETS) return {state:STATE.OK,violations:[]};
+  var ss = SpreadsheetApp.openById(item.id);
+  var sheets = ss.getSheets();
+  var violations = [];
+  for (var j=0; j<sheets.length; j++) {    
+    var sheet = sheets[j];
+    var name = sheet.getName();
+    var range = sheet.getDataRange();
+    var data = range.getValues();
+    var formats = range.getNumberFormats();
+    
+    // Scenario: Google Sheet fails validation test on columns
+    var headers = getHeaders(data);
+    if (headers.error) {
+      violations.push(name + " is missing columns: " + headers.error);
+      continue;
+    }
+        
+    // Scenario: Non-verbose mode passes validation test on columns with minimal details reported
+    // Scenario: Verbose mode passes validation test on columns with details reported
+    for (var i=1; i<data.length && violations.length<MAX_VIOLATIONS_PER_TAB; i++) {
+      
+      // Scenario: data format for the KNumber column is set to "Plain Text"
+      if ((i>1 || data[i][headers.KNumber-1]!="KNumber") && formats[i][headers.KNumber-1])
+        violations.push(name + " Row " + (i+1) +": `KNumber` column is not `Plain Text`");
+        
+      // Scenario: data format for the KNumberExists column is set to "Plain Text" (not boolean)
+      if ((i>1 || data[i][headers.KNumberExists-1]!="KNumberExists") && formats[i][headers.KNumberExists-1])
+        violations.push(name + " Row " + (i+1) +": `KNumberExists` column is not `Plain Text`");
+
+      // Scenario: data format for the Purpose column is set to "Plain Text" (not numbers)
+      if ((i>1 || data[i][headers.Purpose-1]!="Purpose") && formats[i][headers.Purpose-1])
+        violations.push(name + " Row " + (i+1) +": `Purpose` column is not `Plain Text`");
+
+      // Scenario: `KNumberExists` is true but `KNumber` empty
+      if (data[i][headers.KNumberExists-1]=="true" && !data[i][headers.KNumber-1])
+        violations.push(name + " Row " + (i+1) +": `KNumberExists` is true but `KNumber` is empty");
+      
+      // Scenario: `KNumberExists` is neither `false` nor `true`
+      if ((i>1 || data[i][headers.KNumberExists-1]!="KNumberExists") && data[i][headers.KNumberExists-1]!="true" && data[i][headers.KNumberExists-1]!="false") 
+        violations.push(name + " Row " + (i+1) +": `KNumberExists` is neither `false` nor `true` (note lowercase)");
+      
+      // Scenario: `KNumberExists` is `false` but `AlternativeNumber` empty
+      if (data[i][headers.KNumberExists-1]=="false" && !data[i][headers.AlternativeNumber-1]) 
+        violations.push(name + " Row " + (i+1) +": `KNumberExists` is false but `AlternativeNumber` is empty");
+      
+      // Scenario: Purpose is `26` but PurposeOther is empty
+      if (data[i][headers.Purpose-1]==26 && !data[i][headers.PurposeOther-1])
+        violations.push(name + " Row " + (i+1) +": `Purpose` is [26] but `PurposeOther` is empty");
+      
+      // Scenario: `KNumber` is present but not in correct format
+      if ((i>1 || data[i][headers.KNumber-1]!="KNumber") && data[i][headers.KNumber-1] && !isSevenDigitNumber(data[i][headers.KNumber-1]))
+        violations.push(name + " Row " + (i+1) +": `KNumber` is present but not in correct format (7 digits)");
+      
+      // Scenario: `Purpose` not in correct format
+      if ((i>1 || data[i][headers.Purpose-1]!="Purpose") && (isNaN(data[i][headers.Purpose-1]) || data[i][headers.Purpose-1]>26 || data[i][headers.Purpose-1]<1))
+      violations.push(name + " Row " + (i+1) +": `Purpose` is not a number between 1 and 26");
+      
+    }      
+  }
+  if (violations.length) return {state:STATE.FAIL,violations:violations};
+  return {state:STATE.OK,violations:[]};
+}
+
+function isSevenDigitNumber(n) {
+  if (isNaN(n)) return false;
+  var reg = /[0-9]{7}/;
+  return reg.test(n);
+}
+
+function getHeaders(data) {
+  var headers = {Name:false, Quantity:false, Purpose:false, PurposeOther:false, KNumberExists:false, KNumber:false, AlternativeNumber:false, count:0, error:""};
+  for (var i=0; i<data.length && headers.count<7 && i<2; i++) {
+    for (var j=0; j<data[0].length && headers.count<7; j++) {
+      for (var heading in headers) {
+        if (headers[heading]) continue;
+        if (data[i][j]==heading) {
+          headers[heading]=j+1;
+          headers.count++;
+        }
+      }
+    }
+  }
+  if (headers.count<7) {  
+    for (var heading in headers) {
+      if (heading == "count" || heading == "error") continue;
+      if (headers[heading]) continue;
+      if (headers.error) headers.error += ", ";
+      headers.error += "`" + heading + "`";
+    }
+  }
+  return headers;
+}
+
+function recordItemState(row,state) {
+  var ss = SpreadsheetApp.getActive();
+  var sheet = ss.getSheetByName(DETAIL_SHEET);
+  sheet.getRange(row,3).setValue(state);
+}
+
+function recordOverallState(state) {
+  var ss = SpreadsheetApp.getActive();
+  var sheet = ss.getSheetByName(SUMMARY_SHEET);
+  sheet.getRange("B2").setValue(state);
+}
+
+function recordViolations(item,violations) {
+  var ss = SpreadsheetApp.getActive();
+  var sheet = ss.getSheetByName(VIOLATIONS_SHEET);
+  var values = [];
+  for (var i=0; i<violations.length; i++) {
+    values.push([makeHyperlink(item.url,item.name),violations[i]]);
+  }
+  sheet.getRange(sheet.getLastRow()+1,1,values.length,values[0].length).setValues(values);
+}
+
+function clearViolations() {
+  var ss = SpreadsheetApp.getActive();
+  var sheet = ss.getSheetByName(VIOLATIONS_SHEET);
+  if (sheet.getLastRow()>1) sheet.getRange(2,1,sheet.getLastRow()-1,sheet.getLastColumn()).clearContent();
+}
+
+function getInventoryToCheck() {
+  var ss = SpreadsheetApp.getActive();
+  var sheet = ss.getSheetByName(DETAIL_SHEET);
+  var range = sheet.getDataRange();
+  var data = range.getValues();
+  var formulas = range.getFormulas();
+  var items = [];
+  for (var i=1; i<data.length; i++) {
+    var state = data[i][2];
+    if (state) continue;
+    var hyperlink = extractLink(formulas[i][0]);
+    if (!hyperlink) continue;
+    var url = hyperlink.url;
+    var name = hyperlink.text;
+    var type = data[i][1];
+    var id = getIdFromUrl(url);
+    items.push({name:name,type:type,url:url,id:id,row:i+1});
+  }
+  return items;
+}
+
+// =HYPERLINK("http://www.google.com/","Google")
+function extractLink(hyperlink) {
+  if (!hyperlink || typeof hyperlink != "string") return null;
+  var reg = /"([^"]+)"[^"]+"([^"]+)"/;
+  var data = reg.exec(hyperlink);
+  if (data && data[2]) return {url:data[1],text:data[2]};
+}
+
+function getStates() {
+  var ss = SpreadsheetApp.getActive();
+  var sheet = ss.getSheetByName(DATA_SHEET);
+  var data = sheet.getDataRange().getValues();
+  var states = {};
+  for (var i=0; i<data.length; i++) {
+    var id = data[i][0];
+    var text = data[i][1];
+    if (!id || !text) continue;
+    states[id] = text;
+    states[text] = id;
+  }
+  return states;
+}
+
+function writeInitialInventory(items) {
+  var values = [];
+  for (var i=0; i<items.length; i++) {
+    var item = items[i];
+    values.push([makeHyperlink(item.url,item.name),item.type]);
+    item.row = i+2;
+  }
+  var ss = SpreadsheetApp.getActive();
+  var sheet = ss.getSheetByName(DETAIL_SHEET);
+  if (sheet.getLastRow()>1) sheet.getRange(2,1,sheet.getLastRow()-1,sheet.getLastColumn()).clearContent();
+  sheet.getRange(2,1,values.length,values[0].length).setValues(values);
+}
+
+function makeHyperlink(url,text) {
+  return "=HYPERLINK(\"" + url + "\",\"" + text + "\")"
+}
+
+function getInventoryByFolder(folder) {
+  var files = folder.getFiles();
+  var items = [];
+  while (files.hasNext()) {
+    var file = files.next();
+    var name = file.getName();
+    var type = file.getMimeType();
+    var url = file.getUrl();
+    var id = file.getId();
+    items.push({name:name,type:type,url:url,id:id});
+  }
+  var folders = folder.getFolders();
+  while (folders.hasNext()) {
+    items = items.concat(getInventoryByFolder(folders.next()));    
+  }
+  return items;
+}
+
+function validateSpreadsheet(file) {
+  var ss = SpreadsheetApp.open(file);
+}
+
+function getIdFromUrl(url) { 
+  return url.match(/[-\w]{25,}/); 
+}
+
+function getSettings(states) {
+  var ss = SpreadsheetApp.getActive();
+  var sheet = ss.getSheetByName(SUMMARY_SHEET);
+  var data = sheet.getDataRange().getValues();
+  return {folderId:getIdFromUrl(data[0][1]),state:states[data[1][1]]};
+}
