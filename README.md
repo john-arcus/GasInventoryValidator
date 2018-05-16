@@ -12,4 +12,16 @@ Sample test files are hosted on the G Suite Drive folder called ['ValidateInvent
 
 
 
+## Install via Composer
+
+You can add `tpd-xsd` as a local, per-project, development-time dependency to your project using Composer:
+
+```bash
+$ composer require --dev arcus-software/gas-inventory-validator
+
+```
+
+
+
+
 
