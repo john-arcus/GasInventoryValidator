@@ -1,16 +1,18 @@
 /**
 Google Apps Script to be embedded into a Google Sheet that matches the structure of 
 
-ValidateFolder-v1.4.xlsx 
+ValidateInventoryFolder-Tool-v1.7.xlsx
 
 */
 
-var STATE = {OK:1,CONTINUE:2,FAIL:3};
+var STATE = {OK:1,CONTINUE:2,FAIL:3,IGNORE:4};
 var SUMMARY_SHEET = "Summary";
 var DETAIL_SHEET = "Detail";
 var DATA_SHEET = "Data";
 var VIOLATIONS_SHEET = "Violations";
-var MAX_VIOLATIONS_PER_TAB = 5; // maximum number of violations to report for a given tab
+var IGNORES_SHEET = "Skipped";  
+var MAX_VIOLATIONS_PER_TAB = 120; // maximum number of violations to report for a given tab
+
 var TIMEOUT = 5*60*1000; // 5 minutes
 //var TIMEOUT = 5*1000; // 5 seconds
 
@@ -44,6 +46,7 @@ function verifyInventory() {
     var items = getInventoryByFolder(folder);
     writeInitialInventory(items);
     clearViolations();
+    clearIgnores();
   } else {
     var items = getInventoryToCheck();
   }
@@ -53,10 +56,12 @@ function verifyInventory() {
     var item = items[i];
     var result = validateItem(item);
     recordItemState(item.row,states[result.state]);
-    if (result.state!=STATE.OK) {
+    if (result.state!=STATE.OK && result.state!=STATE.IGNORE) {
       fail = true;
       recordViolations(item,result.violations);
     }
+    // V1.6 If there are any reasons why the file or some sheets within the file were ignore, then record them
+    if (result.ignores && result.ignores.length) recordIgnores(item,result.ignores);
     var d = new Date();
     var e = d.getTime();
   }
@@ -68,12 +73,20 @@ function verifyInventory() {
 function validateItem(item) {
   if (item.type == MimeType.MICROSOFT_EXCEL || item.type == MimeType.MICROSOFT_EXCEL_LEGACY) return {state:STATE.FAIL,violations:["has not been converted to Google Sheets"]}
   if (item.type != MimeType.GOOGLE_SHEETS) return {state:STATE.OK,violations:[]};
+  if (isPrivate(item.name)) return {state:STATE.IGNORE,violations:[],ignores:["has underscore suffix"]}; // V1.6  If a file has an underscore suffix then ignore
   var ss = SpreadsheetApp.openById(item.id);
   var sheets = ss.getSheets();
-  var violations = [];
+  var violations = [], ignores = [];
   for (var j=0; j<sheets.length; j++) {    
     var sheet = sheets[j];
     var name = sheet.getName();
+    
+    // V1.6 if the sheet name has an underscore suffix then treat it as private and don't perform any other validations
+    if (isPrivate(name)) {
+      ignores.push(name + " has an underscore suffix");
+      continue;
+    }
+    
     var range = sheet.getDataRange();
     var data = range.getValues();
     var formats = range.getNumberFormats();
@@ -127,14 +140,18 @@ function validateItem(item) {
       
     }      
   }
-  if (violations.length) return {state:STATE.FAIL,violations:violations};
-  return {state:STATE.OK,violations:[]};
+  if (violations.length) return {state:STATE.FAIL,violations:violations,ignores:ignores};
+  return {state:STATE.OK,violations:[],ignores:ignores};
+}
+
+// V1.6 isPrivate(name) is true if the last character is an underscore 
+function isPrivate(name) {
+  return /_$/.test(name);
 }
 
 function isSevenDigitNumber(n) {
   if (isNaN(n)) return false;
-  var reg = /[0-9]{7}/;
-  return reg.test(n);
+  return /[0-9]{7}/.test(n);
 }
 
 function getHeaders(data) {
@@ -173,20 +190,38 @@ function recordOverallState(state) {
   sheet.getRange("B2").setValue(state);
 }
 
-function recordViolations(item,violations) {
+function recordList(name,item,list) {
   var ss = SpreadsheetApp.getActive();
-  var sheet = ss.getSheetByName(VIOLATIONS_SHEET);
+  var sheet = ss.getSheetByName(name);
   var values = [];
-  for (var i=0; i<violations.length; i++) {
-    values.push([makeHyperlink(item.url,item.name),violations[i]]);
+  for (var i=0; i<list.length; i++) {
+    values.push([makeHyperlink(item.url,item.name),list[i]]);
   }
   sheet.getRange(sheet.getLastRow()+1,1,values.length,values[0].length).setValues(values);
 }
 
-function clearViolations() {
+function clearList(name) {
   var ss = SpreadsheetApp.getActive();
-  var sheet = ss.getSheetByName(VIOLATIONS_SHEET);
+  var sheet = ss.getSheetByName(name);
   if (sheet.getLastRow()>1) sheet.getRange(2,1,sheet.getLastRow()-1,sheet.getLastColumn()).clearContent();
+}
+
+function recordViolations(item,violations) {
+  recordList(VIOLATIONS_SHEET,item,violations);
+}
+
+function clearViolations() {
+  clearList(VIOLATIONS_SHEET);
+}
+
+// V1.6 Records list of reasons why files and/or sheets were ignored
+function recordIgnores(item,reasons) {
+  recordList(IGNORES_SHEET,item,reasons);
+}
+
+// V1.6 Clear sheet with list of reasons why files/sheets were ignored
+function clearIgnores() {
+  clearList(IGNORES_SHEET);
 }
 
 function getInventoryToCheck() {
@@ -243,7 +278,7 @@ function writeInitialInventory(items) {
   var ss = SpreadsheetApp.getActive();
   var sheet = ss.getSheetByName(DETAIL_SHEET);
   if (sheet.getLastRow()>1) sheet.getRange(2,1,sheet.getLastRow()-1,sheet.getLastColumn()).clearContent();
-  sheet.getRange(2,1,values.length,values[0].length).setValues(values);
+  if (values.length) sheet.getRange(2,1,values.length,values[0].length).setValues(values);
 }
 
 function makeHyperlink(url,text) {
